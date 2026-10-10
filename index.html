@@ -77,7 +77,7 @@ const R_RING = 1.0, R_FLANGE = 1.10, R_THREAD = 0.975, THREAD_H = 0.024;
 const R_BORE = 0.42, BORE_TH = 0.018, R_CUP = 0.86;   // thinner rim wall, as on the photos
 const Y_RING0 = 0.0, Y_RING1 = 0.35, Y_FL0 = 0.375, Y_FL1 = 0.50, Y_TH0 = 0.54, Y_TH1 = 0.875, Y_TOP = 0.90, Y_FLOOR = 0.46;
 const PITCH = 0.048, BORE_PITCH = 0.04;
-const HOLES = 4, HOLE_Y = 0.175, HOLE_R = 0.065, HOLE_D = 0.055;
+const HOLES = 4, HOLE_Y = 0.175, HOLE_R = 0.095, HOLE_D = 0.065;
 
 // closed meridian (r, y, zone): outer bottom -> up -> top rim -> cup -> floor -> bore -> back
 let LOD = 1;                                    // 1 = on screen, 0.5 = lighter .glb
@@ -89,9 +89,9 @@ function meridian() {
   };
   seg(R_BORE + 0.03, 0.0, R_RING - 0.025, 0.0, 14, 'face');          // flat end face
   seg(R_RING - 0.025, 0.0, R_RING, 0.025, 3, 'edge');                 // chamfer
-  seg(R_RING, 0.025, R_RING, HOLE_Y - 0.085, 20, 'ring');
-  seg(R_RING, HOLE_Y - 0.085, R_RING, HOLE_Y + 0.085, 130, 'ring');   // dense rows through the holes
-  seg(R_RING, HOLE_Y + 0.085, R_RING, Y_RING1, 20, 'ring');                    // ring with the holes
+  seg(R_RING, 0.025, R_RING, HOLE_Y - 0.12, 12, 'ring');
+  seg(R_RING, HOLE_Y - 0.12, R_RING, HOLE_Y + 0.12, 170, 'ring');   // dense rows through the holes
+  seg(R_RING, HOLE_Y + 0.12, R_RING, Y_RING1, 12, 'ring');                    // ring with the holes
   seg(R_RING, Y_RING1, R_FLANGE - 0.03, Y_FL0, 5, 'edge');            // step up to the flange
   seg(R_FLANGE - 0.03, Y_FL0, R_FLANGE, Y_FL0 + 0.03, 3, 'edge');
   seg(R_FLANGE, Y_FL0 + 0.03, R_FLANGE, Y_FL1 - 0.03, 14, 'flange');
@@ -121,7 +121,7 @@ function angles(NT) {
   for (let j = 0; j < NT; j++) A.push((j / NT) * Math.PI * 2);
   for (let h = 0; h < HOLES; h++) {                       // fine steps across each hole so it stays round
     const th0 = (h / HOLES) * Math.PI * 2 + Math.PI / 4;
-    for (let d = -0.085; d <= 0.085; d += 0.0014 / LOD) A.push(th0 + d);
+    for (let d = -0.12; d <= 0.12; d += 0.0014 / LOD) A.push(th0 + d);
   }
   A.sort((a, b) => a - b);
   const U = A.filter((v, i) => i === 0 || v - A[i - 1] > 1e-5);
