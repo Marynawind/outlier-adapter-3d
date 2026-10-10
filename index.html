@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adapter 3D</title>
+<style>
+  :root { --bg: #f4f4f2; --fg: #1b1b1b; --muted: #6b6e73; --line: #d9d9d4; --btn: #1b1b1b; --btn-fg: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #161617; --fg: #ededeb; --muted: #a0a3aa; --line: #2c2c2f; --btn: #ededeb; --btn-fg: #111; }
+  }
+  :root[data-theme="dark"] { --bg: #161617; --fg: #ededeb; --muted: #a0a3aa; --line: #2c2c2f; --btn: #ededeb; --btn-fg: #111; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #view { position: fixed; inset: 0; touch-action: none; }
+  #view canvas { display: block; width: 100% !important; height: 100% !important; }
+  .bar { position: fixed; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 10px;
+    align-items: center; justify-content: space-between; flex-wrap: wrap; pointer-events: none; }
+  .bar > * { pointer-events: auto; }
+  .hint { color: var(--muted); font-size: 13px; }
+  button { font: inherit; font-size: 14px; border: 0; border-radius: 8px; padding: 9px 14px;
+    background: var(--btn); color: var(--btn-fg); cursor: pointer; }
+  button.ghost { background: var(--bg); color: var(--fg); border: 1px solid var(--line); }
+  .zoom { position: fixed; right: 16px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; gap: 8px; }
+  .zoom button { width: 44px; height: 44px; padding: 0; font-size: 22px; line-height: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--line); }
+  .zoom button.fit { font-size: 12px; font-weight: 600; }
+  .btns { display: flex; gap: 8px; }
+  .arbtn { font-size: 14px; border-radius: 8px; padding: 9px 14px; background: var(--btn); color: var(--btn-fg); text-decoration: none; }
+  .drag { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px 8px 12px; border-radius: 999px; border: 1px solid var(--line); color: var(--fg);
+    background: color-mix(in srgb, var(--bg) 80%, transparent); font-size: 14px; font-weight: 600; letter-spacing: .02em;
+    pointer-events: none; transition: opacity .6s; white-space: nowrap; }
+  .drag svg { animation: sway 2.4s ease-in-out infinite; }
+  @keyframes sway { 0%,100% { transform: translateX(-3px); } 50% { transform: translateX(3px); } }
+  @media (prefers-reduced-motion: reduce) { .drag svg { animation: none; } }
+</style>
+</head>
+<body>
+<div id="view" aria-label="3D model of the adapter, drag to rotate"></div>
+<div class="drag" id="drag" aria-hidden="true">
+  <svg viewBox="0 0 48 48" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="24" cy="24" rx="19" ry="7.5"/>
+    <path d="M34 13.5 L41 17 L36 22.5"/>
+    <path d="M14 34.5 L7 31 L12 25.5"/>
+    <path d="M24 12 V36" opacity=".45"/>
+  </svg>
+  <span>Drag to rotate 360°</span>
+</div>
+<div class="zoom">
+  <button id="zin" aria-label="Zoom in">+</button>
+  <button id="zout" aria-label="Zoom out">&minus;</button>
+  <button id="zfit" class="fit" aria-label="Reset view">FIT</button>
+</div>
+<div class="bar">
+  <span class="hint">Scroll, pinch or use + / − to zoom</span>
+  <span class="btns">
+    <button class="ghost" id="spin">Pause</button>
+    <a id="ar" class="arbtn" rel="ar" href="outlier-adapter.usdz" hidden><img alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="1" height="1">View in AR</a>
+    <button id="glb">Download .glb</button>
+  </span>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { USDZExporter } from 'three/addons/exporters/USDZExporter.js';
+
+// ---------- the part, in units of the hole-ring radius (measured from the photos) ----------
+const R_RING = 1.0, R_FLANGE = 1.10, R_THREAD = 0.975, THREAD_H = 0.024;
+const R_BORE = 0.42, BORE_TH = 0.018, R_CUP = 0.86;   // thinner rim wall, as on the photos
+const Y_RING0 = 0.0, Y_RING1 = 0.35, Y_FL0 = 0.375, Y_FL1 = 0.50, Y_TH0 = 0.54, Y_TH1 = 0.875, Y_TOP = 0.90, Y_FLOOR = 0.46;
+const PITCH = 0.048, BORE_PITCH = 0.04;
+const HOLES = 4, HOLE_Y = 0.175, HOLE_R = 0.065, HOLE_D = 0.055;
+
+// closed meridian (r, y, zone): outer bottom -> up -> top rim -> cup -> floor -> bore -> back
+let LOD = 1;                                    // 1 = on screen, 0.5 = lighter .glb
+function meridian() {
+  const P = [];
+  const seg = (r0, y0, r1, y1, n, zone) => {
+    n = Math.max(2, Math.round(n * (n > 20 ? LOD : 1)));
+    for (let i = 0; i < n; i++) { const t = i / n; P.push([r0 + (r1 - r0) * t, y0 + (y1 - y0) * t, zone]); }
+  };
+  seg(R_BORE + 0.03, 0.0, R_RING - 0.025, 0.0, 14, 'face');          // flat end face
+  seg(R_RING - 0.025, 0.0, R_RING, 0.025, 3, 'edge');                 // chamfer
+  seg(R_RING, 0.025, R_RING, HOLE_Y - 0.085, 20, 'ring');
+  seg(R_RING, HOLE_Y - 0.085, R_RING, HOLE_Y + 0.085, 130, 'ring');   // dense rows through the holes
+  seg(R_RING, HOLE_Y + 0.085, R_RING, Y_RING1, 20, 'ring');                    // ring with the holes
+  seg(R_RING, Y_RING1, R_FLANGE - 0.03, Y_FL0, 5, 'edge');            // step up to the flange
+  seg(R_FLANGE - 0.03, Y_FL0, R_FLANGE, Y_FL0 + 0.03, 3, 'edge');
+  seg(R_FLANGE, Y_FL0 + 0.03, R_FLANGE, Y_FL1 - 0.03, 14, 'flange');
+  seg(R_FLANGE, Y_FL1 - 0.03, R_FLANGE - 0.05, Y_FL1, 4, 'edge');
+  seg(R_FLANGE - 0.05, Y_FL1, R_THREAD - THREAD_H - 0.01, Y_FL1, 6, 'face');   // shoulder
+  seg(R_THREAD - THREAD_H - 0.01, Y_FL1, R_THREAD - THREAD_H - 0.01, Y_TH0, 6, 'groove');
+  seg(R_THREAD, Y_TH0, R_THREAD, Y_TH1, 220, 'thread');               // outer thread
+  seg(R_THREAD, Y_TH1, R_THREAD - 0.04, Y_TOP, 4, 'edge');
+  seg(R_THREAD - 0.04, Y_TOP, R_CUP + 0.02, Y_TOP, 6, 'face');        // top rim
+  seg(R_CUP + 0.02, Y_TOP, R_CUP, Y_TOP - 0.02, 2, 'edge');
+  seg(R_CUP, Y_TOP - 0.02, R_CUP, Y_FLOOR + 0.06, 30, 'cup');         // cup wall
+  for (let i = 0; i < 8; i++) {                                         // fillet into the floor
+    const a = (i / 8) * Math.PI / 2;
+    P.push([R_CUP - 0.06 + 0.06 * Math.cos(a), Y_FLOOR + 0.06 - 0.06 * Math.sin(a), 'cup']);
+  }
+  seg(R_CUP - 0.06, Y_FLOOR, R_BORE + 0.03, Y_FLOOR, 14, 'floor');
+  seg(R_BORE + 0.03, Y_FLOOR, R_BORE, Y_FLOOR - 0.03, 3, 'edge');
+  seg(R_BORE, Y_FLOOR - 0.03, R_BORE, 0.03, 160, 'bore');            // inner thread
+  seg(R_BORE, 0.03, R_BORE + 0.03, 0.0, 3, 'edge');
+  return P;
+}
+
+const tri = (x) => { const f = x - Math.floor(x); return 1 - Math.abs(2 * f - 1); };   // 0..1..0, V thread
+
+function angles(NT) {
+  const A = [];
+  for (let j = 0; j < NT; j++) A.push((j / NT) * Math.PI * 2);
+  for (let h = 0; h < HOLES; h++) {                       // fine steps across each hole so it stays round
+    const th0 = (h / HOLES) * Math.PI * 2 + Math.PI / 4;
+    for (let d = -0.085; d <= 0.085; d += 0.0014 / LOD) A.push(th0 + d);
+  }
+  A.sort((a, b) => a - b);
+  const U = A.filter((v, i) => i === 0 || v - A[i - 1] > 1e-5);
+  return U;
+}
+
+function buildGeometry(NT) {
+  const M = meridian(), NM = M.length, TH = angles(NT);
+  NT = TH.length;
+  const pos = new Float32Array(NM * NT * 3), col = new Float32Array(NM * NT * 3), inHole = new Uint8Array(NM * NT);
+  let k = 0;
+  for (let j = 0; j < NT; j++) {
+    const th = TH[j], c = Math.cos(th), s = Math.sin(th);
+    for (let i = 0; i < NM; i++) {
+      let [r, y, zone] = M[i], shade = 1.0, hole = 0;
+      if (zone === 'thread') {
+        const w = tri((y - Y_TH0) / PITCH - th / (Math.PI * 2));
+        const fade = Math.min(1, (y - Y_TH0) / 0.02, (Y_TH1 - y) / 0.02);
+        r = R_THREAD - THREAD_H * (1 - w) * Math.max(0, fade);
+        shade = 0.72 + 0.28 * w;
+      } else if (zone === 'bore') {
+        const w = tri((y - 0.03) / BORE_PITCH + th / (Math.PI * 2));
+        r = R_BORE + BORE_TH * (1 - w);
+        shade = 0.6 + 0.4 * w;
+      } else if (zone === 'ring') {
+        for (let h = 0; h < HOLES; h++) {
+          const th0 = (h / HOLES) * Math.PI * 2 + Math.PI / 4;
+          let d = Math.atan2(Math.sin(th - th0), Math.cos(th - th0)) * R_RING;
+          const dist = Math.hypot(d, y - HOLE_Y);
+          const CH = 0.010, W = 0.012;                                     // chamfer, wall (smooth, near vertical)
+          if (dist < HOLE_R + CH) {
+            const sm = (t) => t * t * (3 - 2 * t);
+            if (dist > HOLE_R) {                                           // chamfer catching the light
+              const e = (HOLE_R + CH - dist) / CH;
+              r = R_RING - CH * sm(e);
+              shade = Math.min(shade, 1.0 + 0.12 * e);
+            } else if (dist > HOLE_R - W) {                                // smooth wall down to the floor
+              hole = 1;
+              const e = sm((HOLE_R - dist) / W);
+              r = R_RING - CH - (HOLE_D - CH) * e;
+              shade = Math.min(shade, 0.22 - 0.06 * e);
+            } else {                                                       // flat, smooth blind floor
+              hole = 1;
+              r = R_RING - HOLE_D;
+              shade = Math.min(shade, 0.34);
+            }
+          }
+        }
+      } else if (zone === 'groove' || zone === 'floor') shade = 0.8;
+      pos[k] = r * c; pos[k + 1] = y; pos[k + 2] = r * s;
+      col[k] = col[k + 1] = col[k + 2] = shade; inHole[k / 3] = hole; k += 3;
+    }
+  }
+  const idx = [], idxH = [];                       // body faces, hole-interior faces (own dark material)
+  for (let j = 0; j < NT; j++) for (let i = 0; i < NM; i++) {
+    const jn = (j + 1) % NT, a = j * NM + i, b = j * NM + (i + 1) % NM, c2 = jn * NM + i, d = jn * NM + (i + 1) % NM;
+    const h = inHole[a] + inHole[b] + inHole[c2] + inHole[d] >= 3;
+    (h ? idxH : idx).push(a, c2, b, b, c2, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(idx.concat(idxH));
+  g.clearGroups(); g.addGroup(0, idx.length, 0); g.addGroup(idx.length, idxH.length, 1);
+  g.computeVertexNormals();
+  g.translate(0, -Y_TOP / 2, 0);
+  return g;
+}
+
+// ---------- scene ----------
+const el = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+el.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const material = new THREE.MeshPhysicalMaterial({
+  color: 0x2a2c30, metalness: 0.55, roughness: 0.4, clearcoat: 0.0, specularIntensity: 0.7,
+  vertexColors: true, side: THREE.DoubleSide,
+});
+material.name = 'anodized black';
+const holeMat = new THREE.MeshStandardMaterial({ color: 0x050506, metalness: 0.1, roughness: 0.95, side: THREE.DoubleSide });
+holeMat.name = 'hole interior';
+const part = new THREE.Mesh(buildGeometry(360), [material, holeMat]);
+part.name = 'adapter';
+const pivot = new THREE.Group(); pivot.add(part);
+pivot.rotation.x = -0.35;                       // a slightly raised view, like the product photos
+scene.add(pivot);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4); key.position.set(3, 5, 4); scene.add(key);
+const rim = new THREE.DirectionalLight(0xffffff, 1.4); rim.position.set(-4, 2, -3); scene.add(rim);
+
+const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 100);
+camera.position.set(0, 0.9, 4.9);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.enablePan = false;
+controls.minDistance = 1.6; controls.maxDistance = 12;
+controls.autoRotate = false;
+
+// idle show: turn round and tip over, so the flat end, the holes and the cup all come round
+let idle = true, idleTimer = null, paused = false, t = 0;
+function pose(t) { pivot.rotation.set(-0.15 + 1.05 * Math.sin(t * 0.5), t, 0); }
+const spinBtn = document.getElementById('spin');
+const dragHint = document.getElementById('drag');
+controls.addEventListener('start', () => { idle = false; clearTimeout(idleTimer); dragHint.style.opacity = '0'; });
+controls.addEventListener('end', () => { idleTimer = setTimeout(() => { if (!paused) idle = true; dragHint.style.opacity = '1'; }, 3000); });
+spinBtn.onclick = () => { paused = !paused; idle = !paused; spinBtn.textContent = paused ? 'Rotate' : 'Pause'; };
+
+function resize() {
+  const w = el.clientWidth, h = el.clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h;
+  camera.fov = w < h ? 42 : 30; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize); resize();
+// zoom buttons and fit: the whole part always fits the window, whatever its shape
+function fitDistance() {
+  const vFov = THREE.MathUtils.degToRad(camera.fov), hFov = 2 * Math.atan(Math.tan(vFov / 2) * camera.aspect);
+  const r = 1.38;                                         // bounding radius of the part with some margin
+  return Math.max(r / Math.sin(Math.min(vFov, hFov) / 2), 2.2);
+}
+function setDistance(d) {
+  d = Math.min(controls.maxDistance, Math.max(controls.minDistance, d));
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  camera.position.copy(controls.target).addScaledVector(dir, d); controls.update();
+}
+const dist = () => camera.position.distanceTo(controls.target);
+document.getElementById('zin').onclick = () => setDistance(dist() / 1.25);
+document.getElementById('zout').onclick = () => setDistance(dist() * 1.25);
+document.getElementById('zfit').onclick = () => { camera.position.set(0, 0.18, 1).normalize(); setDistance(fitDistance()); };
+camera.position.set(0, 0.18, 1).normalize(); setDistance(fitDistance());
+window.addEventListener('resize', () => setDistance(Math.max(dist(), 0)));
+let last = performance.now();
+(function loop(now) {
+  const dt = Math.min(0.05, ((now || last) - last) / 1000); last = now || last;
+  if (idle) { t += dt * 0.9; pose(t); }
+  controls.update(); renderer.render(scene, camera); requestAnimationFrame(loop);
+})();
+
+// ---------- .glb (real size: ring OD taken as 1.5 in = 38.1 mm) ----------
+function exportGLB() {
+  LOD = 0.5; const g = buildGeometry(150); LOD = 1;
+  outwardFaces(g);
+  const s = 0.01905;                         // 1 unit = ring radius = 19.05 mm, in metres
+  g.scale(s, s, s);
+  const bm = material.clone(); bm.color.set(0x55585d);              // viewers without our lighting: a bit lighter base
+  const m = new THREE.Mesh(g, [bm, holeMat.clone()]); m.name = 'Outlier adapter';
+  return new Promise((ok) => new GLTFExporter().parse(m, (buf) => ok(buf), (e) => console.error(e), { binary: true }));
+}
+document.getElementById('glb').onclick = () => {
+  const a = document.createElement('a'); a.href = 'outlier-adapter.glb'; a.download = 'outlier-adapter.glb'; a.click();
+};
+{ const t = document.createElement('a');                       // iPhone / iPad: AR Quick Look
+  if (t.relList && t.relList.supports && t.relList.supports('ar')) document.getElementById('ar').hidden = false; }
+function outwardFaces(g) {
+  // make every triangle face out of the metal (viewers that hide back faces, like iPhone AR, need this)
+  const pa = g.attributes.position.array, na = g.attributes.normal.array;
+  let probe = -1, best = 0;
+  for (let v = 0; v < pa.length / 3; v++) { const r = Math.hypot(pa[v * 3], pa[v * 3 + 2]); if (r > best) { best = r; probe = v; } }
+  const dot = na[probe * 3] * pa[probe * 3] + na[probe * 3 + 2] * pa[probe * 3 + 2];
+  if (dot < 0) {
+    const ix = g.index.array;
+    for (let i = 0; i < ix.length; i += 3) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; }
+    g.index.needsUpdate = true; g.computeVertexNormals();
+  }
+  return dot < 0;
+}
+
+async function exportUSDZ() {
+  LOD = 0.55; const g = buildGeometry(170); LOD = 1;
+  window.__flipped = outwardFaces(g);
+  const s = 0.01905; g.scale(s, s, s);
+  const bm = new THREE.MeshStandardMaterial({ color: 0x26272b, metalness: 0.8, roughness: 0.33 });   // black anodised, like the .glb
+  const hm = new THREE.MeshStandardMaterial({ color: 0x050506, metalness: 0.1, roughness: 0.95 });
+  const sc = new THREE.Scene();
+  const ix = g.index.array;
+  g.groups.forEach((gr, n) => {                    // USDZ wants one material per mesh: split body / hole interiors
+    const used = new Map(), P = [], N = [], I = [];        // keep only the vertices this part uses
+    const pa = g.attributes.position.array, na = g.attributes.normal.array;
+    for (const v of ix.slice(gr.start, gr.start + gr.count)) {
+      if (!used.has(v)) { used.set(v, used.size); P.push(pa[v * 3], pa[v * 3 + 1], pa[v * 3 + 2]); N.push(na[v * 3], na[v * 3 + 1], na[v * 3 + 2]); }
+      I.push(used.get(v));
+    }
+    const part = new THREE.BufferGeometry();
+    part.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); part.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+    part.setIndex(I);
+    const mm = new THREE.Mesh(part, n === 0 ? bm : hm); mm.name = n === 0 ? 'adapter' : 'holes'; sc.add(mm);
+  });
+  return await new USDZExporter().parse(sc);
+}
+window.__adapter = { exportGLB, exportUSDZ, controls, pivot, camera, renderer, scene, pose, stop: () => { idle = false; paused = true; } };
+</script>
+</body>
+</html>
